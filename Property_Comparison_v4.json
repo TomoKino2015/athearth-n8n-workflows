@@ -1,0 +1,86 @@
+{
+  "name": "AtHearth Property Comparison v4.0",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "property-comparison",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-main",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "property-comparison"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json.body;\nconst userData = input.userData || {};\nconst eligibilityData = userData.applicationData?.eligibilityCheckData || {};\nconst preViewingData = userData.applicationData?.preViewingApplicationForm || {};\nconst propertyData = input.propertyData || [];\n\nconst userRequirements = {\n  budget_max: input.budget_max || 150000,\n  required_rooms: input.required_rooms || 2,\n  primary_priority: input.primary_priority || 'space',\n  room_purpose: input.room_purpose || 'separate_work_room',\n  output_language: input.output_language || 'zh',\n  cost_period_months: input.cost_period_months || 24\n};\n\nconst userProfile = {\n  name: preViewingData.fullName || 'Customer',\n  email: userData.userEmail || 'unknown'\n};\n\nreturn { userRequirements, userProfile, propertyData };"
+      },
+      "id": "process-input",
+      "name": "Process Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst req = data.userRequirements;\nconst props = data.propertyData;\nconst lang = req.output_language;\n\nconst systemPrompt = `You are AtHearth's property comparison AI. Analyze rental properties and provide ranked recommendations.\n\nScoring: Budget Fit, Layout Fit, Priority Fit, Cost Efficiency, Location.\nCategories: 🏆 Best Match, 📋 Reference, ⚠️ Over Budget.\nOutput: Use display names, ¥ with commas, markdown tables, total cost comparison.`;\n\nconst langHeaders = {\n  zh: { title: '顾客条件', budget: '预算上限', rooms: '需要房间数', priority: '最优先', purpose: '用途', period: '计算期间', properties: '物件数据', output: '请用中文输出' },\n  en: { title: 'Customer Requirements', budget: 'Budget Max', rooms: 'Required Rooms', priority: 'Top Priority', purpose: 'Purpose', period: 'Calculation Period', properties: 'Property Data', output: 'Please output in English' },\n  ja: { title: '顧客条件', budget: '予算上限', rooms: '必要部屋数', priority: '最優先', purpose: '用途', period: '計算期間', properties: '物件データ', output: '日本語で出力してください' }\n};\nconst L = langHeaders[lang] || langHeaders.zh;\n\nconst userPrompt = `## ${L.title}\n- ${L.budget}: ¥${req.budget_max.toLocaleString()}\n- ${L.rooms}: ${req.required_rooms}\n- ${L.priority}: ${req.primary_priority}\n- ${L.purpose}: ${req.room_purpose}\n- ${L.period}: ${req.cost_period_months}ヶ月\n\n## ${L.properties}\n\\`\\`\\`json\n${JSON.stringify(props, null, 2)}\n\\`\\`\\`\n\n${L.output}\n\n1. 综合比较表\n2. 各物件优缺点分析\n3. ${req.cost_period_months}个月总成本对比\n4. TOP 3 推荐及理由`;\n\nreturn { systemPrompt, userPrompt, userRequirements: req, userProfile: data.userProfile, propertyData: props };"
+      },
+      "id": "build-prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o', messages: [ { role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userPrompt } ], temperature: 0.3, max_tokens: 4096 }) }}"
+      },
+      "id": "openai-request",
+      "name": "OpenAI API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const openaiResponse = $input.first().json;\nconst promptData = $node['Build Prompt'].json;\nconst comparisonMarkdown = openaiResponse.choices?.[0]?.message?.content || 'No comparison generated';\n\nreturn {\n  success: true,\n  comparison_markdown: comparisonMarkdown,\n  input_summary: {\n    properties_compared: promptData.propertyData?.length || 0,\n    budget_max: promptData.userRequirements.budget_max,\n    output_language: promptData.userRequirements.output_language\n  }\n};"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1350, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Process Input", "type": "main", "index": 0 }]] },
+    "Process Input": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt": { "main": [[{ "node": "OpenAI API", "type": "main", "index": 0 }]] },
+    "OpenAI API": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] },
+    "Format Response": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
